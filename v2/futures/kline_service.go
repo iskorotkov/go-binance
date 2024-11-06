@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/buger/jsonparser"
 )
 
 // KlinesService list klines
@@ -63,35 +65,45 @@ func (s *KlinesService) Do(ctx context.Context, opts ...RequestOption) (res []*K
 	if s.endTime != nil {
 		r.setParam("endTime", *s.endTime)
 	}
-	data, _, err := s.c.callAPI(ctx, r, opts...)
+	buf, _, err := s.c.callAPIPooled(ctx, r, opts...)
 	if err != nil {
 		return []*Kline{}, err
 	}
-	j, err := newJSON(data)
+	defer s.c.pool.Put(buf)
+	_, err = jsonparser.ArrayEach(buf.Bytes(), func(elem []byte, _ jsonparser.ValueType, _ int, _ error) {
+		res = append(res, &Kline{})
+		elemIdx := len(res) - 1
+		fieldIdx := -1
+		_, _ = jsonparser.ArrayEach(elem, func(field []byte, _ jsonparser.ValueType, _ int, _ error) {
+			fieldIdx++
+			switch fieldIdx {
+			case 0:
+				res[elemIdx].OpenTime, _ = jsonparser.ParseInt(field)
+			case 1:
+				res[elemIdx].Open = string(field)
+			case 2:
+				res[elemIdx].High = string(field)
+			case 3:
+				res[elemIdx].Low = string(field)
+			case 4:
+				res[elemIdx].Close = string(field)
+			case 5:
+				res[elemIdx].Volume = string(field)
+			case 6:
+				res[elemIdx].CloseTime, _ = jsonparser.ParseInt(field)
+			case 7:
+				res[elemIdx].QuoteAssetVolume = string(field)
+			case 8:
+				res[elemIdx].TradeNum, _ = jsonparser.ParseInt(field)
+			case 9:
+				res[elemIdx].TakerBuyBaseAssetVolume = string(field)
+			case 10:
+				res[elemIdx].TakerBuyQuoteAssetVolume = string(field)
+			}
+		})
+	})
 	if err != nil {
-		return []*Kline{}, err
-	}
-	num := len(j.MustArray())
-	res = make([]*Kline, num)
-	for i := 0; i < num; i++ {
-		item := j.GetIndex(i)
-		if len(item.MustArray()) < 11 {
-			err = fmt.Errorf("invalid kline response")
-			return []*Kline{}, err
-		}
-		res[i] = &Kline{
-			OpenTime:                 item.GetIndex(0).MustInt64(),
-			Open:                     item.GetIndex(1).MustString(),
-			High:                     item.GetIndex(2).MustString(),
-			Low:                      item.GetIndex(3).MustString(),
-			Close:                    item.GetIndex(4).MustString(),
-			Volume:                   item.GetIndex(5).MustString(),
-			CloseTime:                item.GetIndex(6).MustInt64(),
-			QuoteAssetVolume:         item.GetIndex(7).MustString(),
-			TradeNum:                 item.GetIndex(8).MustInt64(),
-			TakerBuyBaseAssetVolume:  item.GetIndex(9).MustString(),
-			TakerBuyQuoteAssetVolume: item.GetIndex(10).MustString(),
-		}
+		return []*Kline{}, fmt.Errorf("parse json: %w", err)
 	}
 	return res, nil
 }
