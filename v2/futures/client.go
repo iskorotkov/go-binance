@@ -394,9 +394,11 @@ func (c *Client) callAPIPooled(ctx context.Context, r *request, opts ...RequestO
 	if _, err := io.Copy(buf, res.Body); err != nil {
 		return nil, &http.Header{}, err
 	}
-	c.debug("response: %#v\n", res)
-	c.debug("response body: %s\n", buf.String())
-	c.debug("response status code: %d\n", res.StatusCode)
+	if c.Debug {
+		c.debug("response: %#v\n", res)
+		c.debug("response body: %s\n", buf.String())
+		c.debug("response status code: %d\n", res.StatusCode)
+	}
 
 	if res.StatusCode >= http.StatusBadRequest {
 		apiErr := new(common.APIError)
@@ -446,9 +448,11 @@ func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption)
 	if _, err := io.Copy(buf, res.Body); err != nil {
 		return nil, &http.Header{}, err
 	}
-	c.debug("response: %#v\n", res)
-	c.debug("response body: %s\n", buf.String())
-	c.debug("response status code: %d\n", res.StatusCode)
+	if c.Debug {
+		c.debug("response: %#v\n", res)
+		c.debug("response body: %s\n", buf.String())
+		c.debug("response status code: %d\n", res.StatusCode)
+	}
 
 	if res.StatusCode >= http.StatusBadRequest {
 		apiErr := new(common.APIError)
