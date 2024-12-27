@@ -65,11 +65,12 @@ func (piks *PremiumIndexKlinesService) Do(ctx context.Context, opts ...RequestOp
 	if piks.endTime != nil {
 		r.setParam("endTime", *piks.endTime)
 	}
-	data, _, err := piks.c.callAPI(ctx, r, opts...)
+	buf, _, err := piks.c.callAPIPooled(ctx, r, opts...)
 	if err != nil {
 		return []*Kline{}, err
 	}
-	_, err = jsonparser.ArrayEach(data, func(elem []byte, _ jsonparser.ValueType, _ int, _ error) {
+	defer piks.c.pool.Put(buf)
+	_, err = jsonparser.ArrayEach(buf.Bytes(), func(elem []byte, _ jsonparser.ValueType, _ int, _ error) {
 		res = append(res, &Kline{})
 		elemIdx := len(res) - 1
 		fieldIdx := -1
