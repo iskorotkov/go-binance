@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bitly/go-simplejson"
@@ -360,6 +361,11 @@ func NewClient(apiKey, secretKey string) *Client {
 		UserAgent:  "Binance/golang",
 		HTTPClient: http.DefaultClient,
 		Logger:     log.New(os.Stderr, "Binance-golang ", log.LstdFlags),
+		pool: sync.Pool{
+			New: func() interface{} {
+				return new(bytes.Buffer)
+			},
+		},
 	}
 }
 
@@ -383,6 +389,11 @@ func NewProxiedClient(apiKey, secretKey, proxyUrl string) *Client {
 			Transport: tr,
 		},
 		Logger: log.New(os.Stderr, "Binance-golang ", log.LstdFlags),
+		pool: sync.Pool{
+			New: func() interface{} {
+				return new(bytes.Buffer)
+			},
+		},
 	}
 }
 
@@ -415,6 +426,7 @@ type Client struct {
 	Logger     *log.Logger
 	TimeOffset int64
 	do         doFunc
+	pool       sync.Pool
 }
 
 func (c *Client) debug(format string, v ...interface{}) {
@@ -491,14 +503,14 @@ func (c *Client) parseRequest(r *request, opts ...RequestOption) (err error) {
 	return nil
 }
 
-func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption) (data []byte, err error) {
-	err = c.parseRequest(r, opts...)
+func (c *Client) callAPIPooled(ctx context.Context, r *request, opts ...RequestOption) (*bytes.Buffer, error) {
+	err := c.parseRequest(r, opts...)
 	if err != nil {
-		return []byte{}, err
+		return nil, err
 	}
 	req, err := http.NewRequest(r.method, r.fullURL, r.body)
 	if err != nil {
-		return []byte{}, err
+		return nil, err
 	}
 	req = req.WithContext(ctx)
 	req.Header = r.header
@@ -509,13 +521,10 @@ func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption)
 	}
 	res, err := f(req)
 	if err != nil {
-		return []byte{}, err
-	}
-	data, err = io.ReadAll(res.Body)
-	if err != nil {
-		return []byte{}, err
+		return nil, err
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
 		cerr := res.Body.Close()
 		// Only overwrite the returned error if the original error was nil and an
 		// error occurred while closing the body.
@@ -523,22 +532,83 @@ func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption)
 			err = cerr
 		}
 	}()
-	c.debug("response: %#v\n", res)
-	c.debug("response body: %s\n", string(data))
-	c.debug("response status code: %d\n", res.StatusCode)
+	buf := c.pool.Get().(*bytes.Buffer)
+	buf.Reset()
+	if _, err := io.Copy(buf, res.Body); err != nil {
+		return nil, err
+	}
+	if c.Debug {
+		c.debug("response: %#v\n", res)
+		c.debug("response body: %s\n", buf.String())
+		c.debug("response status code: %d\n", res.StatusCode)
+	}
 
 	if res.StatusCode >= http.StatusBadRequest {
 		apiErr := new(common.APIError)
-		e := json.Unmarshal(data, apiErr)
+		e := json.Unmarshal(buf.Bytes(), apiErr)
 		if e != nil {
 			c.debug("failed to unmarshal json: %s\n", e)
 		}
 		if !apiErr.IsValid() {
-			apiErr.Response = data
+			apiErr.Response = buf.Bytes()
 		}
 		return nil, apiErr
 	}
-	return data, nil
+	return buf, nil
+}
+
+func (c *Client) callAPI(ctx context.Context, r *request, opts ...RequestOption) ([]byte, error) {
+	err := c.parseRequest(r, opts...)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(r.method, r.fullURL, r.body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	req.Header = r.header
+	c.debug("request: %#v\n", req)
+	f := c.do
+	if f == nil {
+		f = c.HTTPClient.Do
+	}
+	res, err := f(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		cerr := res.Body.Close()
+		// Only overwrite the returned error if the original error was nil and an
+		// error occurred while closing the body.
+		if err == nil && cerr != nil {
+			err = cerr
+		}
+	}()
+	buf := c.pool.Get().(*bytes.Buffer)
+	buf.Reset()
+	if _, err := io.Copy(buf, res.Body); err != nil {
+		return nil, err
+	}
+	if c.Debug {
+		c.debug("response: %#v\n", res)
+		c.debug("response body: %s\n", buf.String())
+		c.debug("response status code: %d\n", res.StatusCode)
+	}
+
+	if res.StatusCode >= http.StatusBadRequest {
+		apiErr := new(common.APIError)
+		e := json.Unmarshal(buf.Bytes(), apiErr)
+		if e != nil {
+			c.debug("failed to unmarshal json: %s\n", e)
+		}
+		if !apiErr.IsValid() {
+			apiErr.Response = buf.Bytes()
+		}
+		return nil, apiErr
+	}
+	return buf.Bytes(), nil
 }
 
 // SetApiEndpoint set api Endpoint
